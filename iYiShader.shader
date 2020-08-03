@@ -165,11 +165,16 @@ Shader "Custom/iYiShader"
 
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed3 lanbert = saturate(lightProduct *0.25 + 0.75);
-				fixed3 lanbert2 = pow(lightProduct, 0.2);
+				fixed3 lanbert = saturate(lightProduct *0.25 + 0.75); // make labert shadows softer
+				fixed3 lanbert2 = pow(lightProduct, 0.2); // make the boundary of shadows clearer
 				fixed3 shadowAttenuation = (2*lanbert + lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
+
+				// 1st pow: high intensity shadow, avoid gray ones
+				//		to make the intensity of colors softer, make the value decrease in it
+				// though this shader avoid to make the charactor agly in dark places,
+				// ambient light makes them saturated white. the last pow() makes an ambient light softer
 				col.rgb = (pow(col, 1.5 / pow(shadow, 1.5))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3));
 
 
