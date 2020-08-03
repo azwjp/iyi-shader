@@ -22,15 +22,23 @@ Shader "Custom/iYiShader"
         LOD 200
 
         CGINCLUDE
+			#include "UnityPBSLighting.cginc"
+			#include "AutoLight.cginc"
 			inline float4x4 InvTangentMatrix(float3 tan, float3 bin, float3 nor)
-		{
-			return transpose(float4x4(
-				float4(tan, 0),
-				float4(bin, 0),
-				float4(nor, 0),
-				float4(0, 0, 0, 1)
-				));
-		}
+			{
+				return transpose(float4x4(
+					float4(tan, 0),
+					float4(bin, 0),
+					float4(nor, 0),
+					float4(0, 0, 0, 1)
+					));
+			}
+
+			inline float4x4 GetInvTangentMatrix(appdata_full v)
+			{
+				float3 n = normalize(v.normal);
+				return InvTangentMatrix(v.tangent, cross(n, v.tangent), n);
+			}
         ENDCG
 
 		Pass{
@@ -47,8 +55,6 @@ Shader "Custom/iYiShader"
 
 			// Use shader model 3.0 target, to get nicer looking lighting
 			#pragma target 3.0
-			#include "UnityPBSLighting.cginc"
-			#include "AutoLight.cginc"
 
 			struct Input
 			{
@@ -81,45 +87,10 @@ Shader "Custom/iYiShader"
 			fixed4 _Color;
 			sampler2D _Normal;
 			half4 _Normal_ST;
-			half _NormalScale;
 			fixed4  _FresnelColor;
 			half _FresnelRimCoefficient;
 			half _FresnelBaseCoefficient;
-
-			inline half4 LightingIyi(SurfaceOutputIyi s, float3 viewDir, UnityGI gi)
-			{
-				//s.Normal = normalize(s.Normal);
-				//
-				half oneMinusReflectivity;
-				half3 specColor;
-				//s.Albedo = DiffuseAndSpecularFromMetallic(s.Albedo, s.Metallic, /*out*/ specColor, /*out*/ oneMinusReflectivity);
-
-				//// shader relies on pre-multiply alpha-blend (_SrcBlend = One, _DstBlend = OneMinusSrcAlpha)
-				//// this is necessary to handle transparency in physically correct way - only diffuse component gets affected by alpha
-				//half outputAlpha;
-				//s.Albedo = PreMultiplyAlpha(s.Albedo, s.Alpha, oneMinusReflectivity, /*out*/ outputAlpha);
-				//
-				half4 c = 0;// UNITY_BRDF_PBS(s.Albedo, specColor, oneMinusReflectivity, s.Smoothness, s.Normal, viewDir, gi.light, gi.indirect);
-				//half d = dot(s.Normal, viewDir);
-				c.rgb = s.Albedo.rgb;
-				c.a = s.Alpha;
-							
-				return c;
-			}
-
-			inline void LightingIyi_GI(
-				SurfaceOutputIyi s,
-				UnityGIInput data,
-				inout UnityGI gi)
-			{
-				#if defined(UNITY_PASS_DEFERRED) && UNITY_ENABLE_REFLECTION_BUFFERS
-							gi = UnityGlobalIllumination(data, s.Occlusion, s.Normal);
-				#else
-							Unity_GlossyEnvironmentData g = UnityGlossyEnvironmentSetup(s.Smoothness, data.worldViewDir, s.Normal, lerp(unity_ColorSpaceDielectricSpec.rgb, s.Albedo, s.Metallic));
-							gi = UnityGlobalIllumination(data, s.Occlusion, s.Normal, g);
-				#endif
-			}
-
+			
 			// Add instancing support for this shader. You need to check 'Enable Instancing' on materials that use the shader.
 			// See https://docs.unity3d.com/Manual/GPUInstancing.html for more information about instancing.
 			// #pragma instancing_options assumeuniformscaling
@@ -127,26 +98,18 @@ Shader "Custom/iYiShader"
 				// put more per-instance properties here
 			UNITY_INSTANCING_BUFFER_END(Props)
 
-			/*void surf(Input IN, inout SurfaceOutputIyi o)
-			{
-				o.SurfInput = IN;
-				// Albedo comes from a texture tinted by color
-				fixed4 c = tex2D(_MainTex, IN.uv_MainTex) * _Color;
-				o.Albedo = c.rgb;
-				// Metallic and smoothness come from slider variables
-				o.Metallic = _Metallic;
-				o.Smoothness = _Glossiness;
-				o.Alpha = c.a;
-			}*/
 			struct v2f
 			{
 				UNITY_POSITION(pos);
 				float2 uv : TEXCOORD0; // _MainTex
 				float3 worldNormal : TEXCOORD1;
-				float3 worldPos : TEXCOORD2;
+				float3 worldPos : TEXCOORD8;
+				float3 worldLightDir : TEXCOORD2;
 				float3 ambient: TEXCOORD3;
 				float3 lightDir : TEXCOORD4;
 				UNITY_SHADOW_COORDS(5)
+				float3 viewDir : TEXCOORD6;
+				float3 worldViewDir : TEXCOORD7;
 			};
 			v2f vert(appdata_full v) {
 				v2f o;
@@ -172,98 +135,54 @@ Shader "Custom/iYiShader"
 					o.ambient = 0;
 				#endif
 
+
+				o.worldViewDir = normalize(UnityWorldSpaceViewDir(o.worldPos));
+				#ifndef USING_DIRECTIONAL_LIGHT
+					o.worldLightDir = normalize(UnityWorldSpaceLightDir(o.worldPos));
+				#else
+					o.worldLightDir = _WorldSpaceLightPos0.xyz;
+				#endif
+
 				// for bamp map
-				float3 n = normalize(v.normal);
-				o.lightDir = normalize(mul(mul(unity_WorldToObject, _WorldSpaceLightPos0), InvTangentMatrix(v.tangent, cross(n, v.tangent), n)));
+				TANGENT_SPACE_ROTATION;
+				o.lightDir = normalize(mul(rotation, ObjSpaceLightDir(v.vertex)));
+				o.viewDir = normalize(mul(rotation, ObjSpaceViewDir(v.vertex)));
 
 				return o;
 			}
+
 			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
-				//surf
-				SurfaceOutputIyi o;
-				UNITY_INITIALIZE_OUTPUT(SurfaceOutputIyi, o);
-				Input input;
-				input.uv_MainTex = IN.uv;
-				o.Emission = 0.0;
-				o.Occlusion = 1.0;
-				o.Normal = IN.worldNormal;
-
-				input.ASEVFace = ASEVFace;
-				// dup
-				input.worldPos = IN.worldPos;
-				input.worldNormal = IN.worldNormal;
-
-				// surf method
-				o.SurfInput = input;
 				// Albedo comes from a texture tinted by color
-				fixed4 col = tex2D(_MainTex, input.uv_MainTex) * _Color;
+				fixed4 col = tex2D(_MainTex, IN.uv) * _Color;
 
-				float3 worldPos = IN.worldPos;
-				float3 worldViewDir = normalize(UnityWorldSpaceViewDir(worldPos));
-#ifndef USING_DIRECTIONAL_LIGHT
-				fixed3 lightDir = normalize(UnityWorldSpaceLightDir(worldPos));
-#else
-				fixed3 lightDir = _WorldSpaceLightPos0.xyz;
-#endif
+				float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
+				half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), 1);
 
 
-				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - dot(IN.worldNormal, worldViewDir), 5);
-				col.rgb += max(0, fresnel) * _FresnelColor;
 
-				fixed3 lightProduct = max(0, dot(IN.worldNormal, lightDir));
+				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
+				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
+
+				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
+				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
 				fixed3 lanbert = saturate(lightProduct *0.75 + 0.25);
-				fixed3 lanbert2 = pow(lightProduct, 0.3);//(pow(col, 1 / pow(lightTmp, 0.2)));
-				fixed3 shadowAttenuation = lanbert2 * SHADOW_ATTENUATION(IN) ;
-				fixed3 shadow = saturate(shadowAttenuation / 2 + 0.5);
-				fixed3 shadow2 = saturate(shadowAttenuation);
-				col.rgb = (pow(col, 1 / pow(shadow, 1.5))) * (pow(shadow, 0.5) * _LightColor0 + IN.ambient);
-				//fixed3 lightTmp = saturate(dot(IN.worldNormal, _WorldSpaceLightPos0.xyz));
-				//fixed3 lanbert = saturate(lightTmp / 2 + 0.5);
-				//fixed3 lanbert2 = saturate(lightTmp / 10 + 0.9);
-				//col.rgb *= (pow(col, 1 / pow(lanbert, 1)));
-				//col.rgb += IN.ambient;
-				//col = tex2D(_MainTex, input.uv_MainTex) * _Color * SHADOW_ATTENUATION(IN);
-				o.Albedo = col.rgb;
-				// Metallic and smoothness come from slider variables
-				o.Metallic = _Metallic;
-				o.Smoothness = _Glossiness;
-				o.Alpha = col.a;
-				//surf(input,o);
+				fixed3 lanbert2 = pow(lightProduct, 0.5);//(pow(col, 1 / pow(lightTmp, 0.2)));
+				fixed3 shadowAttenuation = (lanbert + lanbert2) / 2 * atten * _LightColor0;
+				fixed3 shadow = shadowAttenuation / 2 + 0.5;
+				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
+				col.rgb = (pow(col, 1 / pow(shadow, 2))) * ((2*shadow + 1*shadow2)/3 + IN.ambient) /1.5;
 
-				UNITY_LIGHT_ATTENUATION(atten, IN, worldPos);
-				fixed4 c = 0;
-
-				UnityGI gi;
-				UNITY_INITIALIZE_OUTPUT(UnityGI, gi);
-				gi.light.color = _LightColor0.rgb;
-				gi.light.dir = lightDir;
-
-				UnityGIInput giInput;
-				UNITY_INITIALIZE_OUTPUT(UnityGIInput, giInput);
-				giInput.light = gi.light;
-				giInput.worldPos = worldPos;
-				giInput.worldViewDir = worldViewDir;
-				giInput.atten = atten;
-
-				giInput.probeHDR[0] = unity_SpecCube0_HDR;
-				giInput.probeHDR[1] = unity_SpecCube1_HDR;
-				#if defined(UNITY_SPECCUBE_BLENDING) || defined(UNITY_SPECCUBE_BOX_PROJECTION)
-					giInput.boxMin[0] = unity_SpecCube0_BoxMin; // .w holds lerp value for blending
-				#endif
-				LightingIyi_GI(o, giInput, gi);
-				c += LightingIyi(o, worldViewDir, gi);
 
 				half NdotL = max(0, dot(IN.worldNormal, lightProduct));
-				float3 R = normalize(-lightDir + 2.0 * IN.worldNormal * NdotL);
-				float3 specular = pow(max(0, dot(R, worldViewDir)), _Glossiness * 100)*_Glossiness * atten*_LightColor0;
-				c.rgb += max(0, specular);
+				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
+				float3 specular = pow(max(0, dot(R, IN.worldViewDir)), _Glossiness * 100)*_Glossiness * atten * _LightColor0;
+				col.rgb += max(0, specular);
 
-
-				return c;
+				return col;
 			}
 			ENDCG
 		}
-		Pass{
+		Pass {
 
 			Tags{ "LightMode" = "ForwardAdd" }
 
@@ -271,92 +190,101 @@ Shader "Custom/iYiShader"
 			ZWrite Off
 
 			CGPROGRAM
-#pragma vertex vert
-#pragma fragment frag
-#pragma multi_compile_fwdadd
+			#pragma vertex vert
+			#pragma fragment frag
+			#pragma multi_compile_fwdadd
 
-#include "UnityCG.cginc"
-#include "AutoLight.cginc"
-#include "UnityPBSLighting.cginc"
+			#include "UnityCG.cginc"
+			#include "AutoLight.cginc"
+			#include "UnityPBSLighting.cginc"
 
 			struct appdata
-		{
-			half4 vertex : POSITION;
-			half3 normal : NORMAL;
-			half2 texcoord : TEXCOORD0;
-		};
+			{
+				half4 vertex : POSITION;
+				half3 normal : NORMAL;
+				half2 texcoord : TEXCOORD0;
+			};
 
-		struct v2f
-		{
-			UNITY_POSITION(pos);
-			half2 uv : TEXCOORD0;
-			half3 worldNormal: TEXCOORD1;
-			half3 ambient: TEXCOORD2;
-			half3 worldPos: TEXCOORD3;
-			float3 lightDir : TEXCOORD4;
-			float3 worldLightDir : TEXCOORD5;
-		};
+			struct v2f
+			{
+				UNITY_POSITION(pos);
+				half2 uv : TEXCOORD0;
+				half3 worldNormal: TEXCOORD1;
+				half3 ambient: TEXCOORD2;
+				half3 worldPos: TEXCOORD3;
+				float3 lightDir : TEXCOORD4;
+				float3 worldLightDir : TEXCOORD5;
+			};
 
-		sampler2D _MainTex;
-		half4 _MainTex_ST;
-		half _Glossiness;
-		half _Metallic;
-		fixed4 _Color;
-		uniform sampler2D _Normal;
-		uniform float4 _Normal_ST;
-		uniform float _NormalScale;
+			sampler2D _MainTex;
+			half4 _MainTex_ST;
+			half _Glossiness;
+			half _Metallic;
+			fixed4 _Color;
+			uniform sampler2D _Normal;
+			uniform float4 _Normal_ST;
+			uniform float _NormalScale;
 
-		v2f vert(appdata_full v)
-		{
-			v2f o = (v2f)0;
+			v2f vert(appdata_full v)
+			{
+				v2f o = (v2f)0;
 
-			o.pos = UnityObjectToClipPos(v.vertex);
-			o.uv = TRANSFORM_TEX(v.texcoord, _MainTex);
-			o.worldNormal = UnityObjectToWorldNormal(v.normal);
-			o.worldPos = mul(unity_ObjectToWorld, v.vertex);
+				o.pos = UnityObjectToClipPos(v.vertex);
+				o.uv = TRANSFORM_TEX(v.texcoord, _MainTex);
+				o.worldNormal = UnityObjectToWorldNormal(v.normal);
+				o.worldPos = mul(unity_ObjectToWorld, v.vertex);
 
-			// for bamp map
-			float3 n = normalize(v.normal);
-			if (_WorldSpaceLightPos0.w > 0) {
-				o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz - o.worldPos.xyz);
+				// for bamp map
+				float3 n = normalize(v.normal);
+				if (_WorldSpaceLightPos0.w > 0) {
+					o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz - o.worldPos.xyz);
+				}
+				else {
+					o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz);
+				}
+				o.lightDir = normalize(mul(mul(unity_WorldToObject, o.worldLightDir), InvTangentMatrix(v.tangent, cross(n, v.tangent), n)));
+
+				return o;
 			}
-			else {
-				o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz);
-			}
-			o.lightDir = normalize(mul(mul(unity_WorldToObject, o.worldLightDir), InvTangentMatrix(v.tangent, cross(n, v.tangent), n)));
 
-			return o;
-		}
-
-		half4 frag(v2f IN) : COLOR
-		{
-			half4 col = tex2D(_MainTex, IN.uv);
-			float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
-			half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), _NormalScale);
+			half4 frag(v2f IN) : COLOR
+			{
+				fixed4 col = tex2D(_MainTex, IN.uv);
+				float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
+				half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), 1);
 
 
-			UNITY_LIGHT_ATTENUATION(attenuation, IN, IN.worldPos);
+				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 
-			float3 worldPos = IN.worldPos;
-			float3 worldViewDir = normalize(UnityWorldSpaceViewDir(worldPos));
-			half NdotL = max(0, dot(IN.worldNormal, IN.worldLightDir));
-			if (NdotL <= 0) {
-				attenuation = 0;
-			}
+				float3 worldPos = IN.worldPos;
+				float3 worldViewDir = normalize(UnityWorldSpaceViewDir(worldPos));
+				half NdotL = max(0, dot(IN.worldNormal, IN.worldLightDir));
+				if (NdotL <= 0) {
+					atten = 0;
+				}
 
 			
-			half3 diff = max(0, dot(normal, IN.lightDir)) * _LightColor0 * attenuation;
-			if(dot(normal, IN.lightDir) > 0) col.rgb *= pow(diff, 1); // make the light soft
-			else col.rgb = 0;
+				//half3 diff = max(0, dot(normal, IN.lightDir)) * _LightColor0 * atten*2;
+				//col.rgb *= pow(diff, 1); // make the light soft
 
 
-			float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
-			float3 spec = pow(max(0, dot(R, worldViewDir)), _Glossiness * 1000)*_LightColor0 *_Glossiness * attenuation;
-			col.rgb += max(0, spec);
-			return col;
-		}
+				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
+				fixed3 lanbert = saturate(lightProduct *0.75 + 0.25);
+				fixed3 lanbert2 = pow(lightProduct, 0.5);//(pow(col, 1 / pow(lightTmp, 0.2)));
+				fixed3 shadowAttenuation = lanbert2 * atten;
+				fixed3 shadow1 = saturate(shadowAttenuation / 2 + 0.5);
+				fixed3 shadow2 = saturate(shadowAttenuation);
+				col.rgb = (pow(col, 1 / pow(shadow1, 2))) * (pow(shadow2, 0.3) * _LightColor0 + IN.ambient);
+
+
+				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
+				float3 spec = pow(max(0, dot(R, worldViewDir)), _Glossiness * 1000)*_LightColor0 *_Glossiness * atten;
+				col.rgb += max(0, spec);
+				return col;
+			}
 			ENDCG
 		}
+
 		Pass
 		{
 			Tags{ "LightMode" = "ShadowCaster" }
