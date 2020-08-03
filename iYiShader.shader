@@ -153,7 +153,7 @@ Shader "Custom/iYiShader"
 
 			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
 				// Albedo comes from a texture tinted by color
-				fixed4 col = tex2D(_MainTex, IN.uv) * _Color;
+				fixed4 col = clamp(tex2D(_MainTex, IN.uv) * _Color, 0.01,0.99);
 
 				float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
 				half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), 1);
@@ -165,12 +165,12 @@ Shader "Custom/iYiShader"
 
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed3 lanbert = saturate(lightProduct *0.75 + 0.25);
-				fixed3 lanbert2 = pow(lightProduct, 0.5);//(pow(col, 1 / pow(lightTmp, 0.2)));
-				fixed3 shadowAttenuation = (lanbert + lanbert2) / 2 * atten * _LightColor0;
+				fixed3 lanbert = saturate(lightProduct *0.25 + 0.75);
+				fixed3 lanbert2 = pow(lightProduct, 0.2);
+				fixed3 shadowAttenuation = (2*lanbert + lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
-				col.rgb = (pow(col, 1 / pow(shadow, 2))) * ((2*shadow + 1*shadow2)/3 + IN.ambient) /1.5;
+				col.rgb = (pow(col, 1.5 / pow(shadow, 1.5))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3));
 
 
 				half NdotL = max(0, dot(IN.worldNormal, lightProduct));
@@ -249,7 +249,7 @@ Shader "Custom/iYiShader"
 
 			half4 frag(v2f IN) : COLOR
 			{
-				fixed4 col = tex2D(_MainTex, IN.uv);
+				fixed4 col = clamp(tex2D(_MainTex, IN.uv) * _Color, 0.01,0.99);
 				float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
 				half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), 1);
 
@@ -269,13 +269,12 @@ Shader "Custom/iYiShader"
 
 
 				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed3 lanbert = saturate(lightProduct *0.75 + 0.25);
-				fixed3 lanbert2 = pow(lightProduct, 0.5);//(pow(col, 1 / pow(lightTmp, 0.2)));
-				fixed3 shadowAttenuation = lanbert2 * atten;
-				fixed3 shadow1 = saturate(shadowAttenuation / 2 + 0.5);
-				fixed3 shadow2 = saturate(shadowAttenuation);
-				col.rgb = (pow(col, 1 / pow(shadow1, 2))) * (pow(shadow2, 0.3) * _LightColor0 + IN.ambient);
-
+				fixed3 lanbert = saturate(lightProduct *0.25 + 0.75);
+				fixed3 lanbert2 = pow(lightProduct, 0.2);
+				fixed3 shadowAttenuation = (2 * lanbert + lanbert2) / 3 * atten * _LightColor0;
+				fixed3 shadow1 = shadowAttenuation / 2 + 0.5;
+				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
+				col.rgb = (pow(col, 1.5 / pow(shadow1, 1.5))) * ((2 * shadow1 + 1 * shadow2) / 3 + pow(IN.ambient, 3));
 
 				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
 				float3 spec = pow(max(0, dot(R, worldViewDir)), _Glossiness * 1000)*_LightColor0 *_Glossiness * atten;
