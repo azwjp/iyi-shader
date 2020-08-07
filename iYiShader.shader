@@ -4,21 +4,28 @@ Shader "iYiShader/iYiShader"
 {
     Properties
     {
+		[HideInInspector] _RenderingMode("Rendering Mode", Int) = 0
+		[HideInInspector] _BlendA("Blend Source", Int) = 1.0
+		[HideInInspector] _BlendB("Blend Distination", Int) = 0.0
+
 		[Header(Rendering)]
 		[Enum(UnityEngine.Rendering.CullMode)]_CullMode("Cull Mode", Int) = 0
+
         _Color ("Color", Color) = (1,1,1,1)
         _MainTex ("Albedo (RGB)", 2D) = "white" {}
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
 		[Normal][Header(Normal Map)]_Normal("Normal", 2D) = "bump" {}
 		[Ambient Occlusion][Header(Normal Map)]_AmbientOcclusion("Ambient Occlusion", 2D) = "bump" {}
-		[Header(Fresnel Schlick approximation )]_FresnelColor("Fresnel Color", Color) = (1,1,1,0)
+		[Header(Fresnel Schlick approximation )]
+		_FresnelColor("Fresnel Color", Color) = (1,1,1,0)
 		[PowerSlider(2)] _FresnelRimCoefficient("Rim Coefficient", Range(0.0, 1.0)) = 1
 		[PowerSlider(2)] _FresnelBaseCoefficient("Base Coefficient", Range(0.0, 1.0)) = 0
     }
     SubShader
     {
-        Tags { "RenderType"="Opaque" }
+		Tags{ "RenderType" = "Opaque"}
+		Blend[_BlendA][_BlendB]
 		Cull[_CullMode]
         LOD 200
 
@@ -330,6 +337,8 @@ Shader "iYiShader/iYiShader"
 		}
     }
     FallBack "Diffuse"
+
+	CustomEditor "IyiShaderGUI"
 }
 
 
