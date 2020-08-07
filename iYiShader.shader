@@ -1,6 +1,6 @@
 ﻿// Upgrade NOTE: replaced '_Object2World' with 'unity_ObjectToWorld'
 
-Shader "Custom/iYiShader"
+Shader "iYiShader/iYiShader"
 {
     Properties
     {
@@ -11,6 +11,7 @@ Shader "Custom/iYiShader"
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
 		[Normal][Header(Normal Map)]_Normal("Normal", 2D) = "bump" {}
+		[Ambient Occlusion][Header(Normal Map)]_AmbientOcclusion("Ambient Occlusion", 2D) = "bump" {}
 		[Header(Fresnel Schlick approximation )]_FresnelColor("Fresnel Color", Color) = (1,1,1,0)
 		[PowerSlider(2)] _FresnelRimCoefficient("Rim Coefficient", Range(0.0, 1.0)) = 1
 		[PowerSlider(2)] _FresnelBaseCoefficient("Base Coefficient", Range(0.0, 1.0)) = 0
@@ -164,9 +165,9 @@ Shader "Custom/iYiShader"
 				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
 
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
-				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed3 lanbert = saturate(lightProduct *0.25 + 0.75); // make labert shadows softer
-				fixed3 lanbert2 = pow(lightProduct, 0.2); // make the boundary of shadows clearer
+				fixed lightProduct = max(0, dot(normal, IN.lightDir));
+				fixed lanbert = saturate(lightProduct *0.25 + 0.75); // make labert shadows softer
+				fixed lanbert2 = pow(lightProduct, 0.2); // make the boundary of shadows clearer
 				fixed3 shadowAttenuation = (2*lanbert + lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
@@ -175,7 +176,7 @@ Shader "Custom/iYiShader"
 				//		to make the intensity of colors softer, make the value decrease in it
 				// though this shader avoid to make the charactor agly in dark places,
 				// ambient light makes them saturated white. the last pow() makes an ambient light softer
-				col.rgb = (pow(col, 1.5 / pow(shadow, 1.5))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3));
+				col.rgb = (pow(col, 1 / pow(shadow, 1))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3)) * col.a;
 
 
 				half NdotL = max(0, dot(IN.worldNormal, lightProduct));
@@ -183,6 +184,8 @@ Shader "Custom/iYiShader"
 				float3 specular = pow(max(0, dot(R, IN.worldViewDir)), _Glossiness * 100)*_Glossiness * atten * _LightColor0;
 				col.rgb += max(0, specular);
 
+
+				
 				return col;
 			}
 			ENDCG
@@ -273,14 +276,14 @@ Shader "Custom/iYiShader"
 				//col.rgb *= pow(diff, 1); // make the light soft
 
 
-				fixed3 lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed3 lanbert = saturate(lightProduct *0.25 + 0.75);
-				fixed3 lanbert2 = pow(lightProduct, 0.2);
-				fixed3 shadowAttenuation = (2 * lanbert + lanbert2) / 3 * atten * _LightColor0;
+				fixed lightProduct = max(0, dot(normal, IN.lightDir));
+				fixed lanbert = saturate(lightProduct *0.25 + 0.75);
+				fixed lanbert2 = pow(lightProduct, 0.2);
+				fixed3 shadowAttenuation = (2 * lanbert + lanbert2) / 3 * atten;
 				fixed3 shadow1 = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
-				col.rgb = (pow(col, 1.5 / pow(shadow1, 1.5))) * ((2 * shadow1 + 1 * shadow2) / 3 + pow(IN.ambient, 3));
-
+				col.rgb = (pow(col, 1 / pow(shadow1, 1))) * ((2 * shadow1 + 1 * shadow2) / 3 + pow(IN.ambient, 3)) * atten * _LightColor0 * col.a;
+				//col.rgb *= atten * _LightColor0;
 				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
 				float3 spec = pow(max(0, dot(R, worldViewDir)), _Glossiness * 1000)*_LightColor0 *_Glossiness * atten;
 				col.rgb += max(0, spec);
