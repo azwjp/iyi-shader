@@ -45,6 +45,20 @@ Shader "iYiShader/iYiShader"
 			#include "UnityPBSLighting.cginc"
 			#include "AutoLight.cginc"
 			#pragma shader_feature USE_SPECTROSCOPY
+
+			fixed4 _Color;
+		sampler2D _MainTex;
+		half4 _MainTex_ST;
+		sampler2D _Normal;
+		half4 _Normal_ST;
+		half _Glossiness;
+		half _Metallic;
+		sampler2D _MainTex2;
+		half4 _MainTex2_ST;
+		half _SecondaryMapStrength;
+		sampler2D _Normal2;
+		half4 _Normal2_ST;
+
 			inline float4x4 InvTangentMatrix(float3 tan, float3 bin, float3 nor)
 			{
 				return transpose(float4x4(
@@ -59,6 +73,38 @@ Shader "iYiShader/iYiShader"
 			{
 				float3 n = normalize(v.normal);
 				return InvTangentMatrix(v.tangent, cross(n, v.tangent), n);
+			}
+
+			inline half3 Phong(fixed lightNormalProduct, half3 normal, half3 lightDir, half3 viewDir, half _Glossiness, fixed atten, half3 _LightColor0)
+			{
+				half NdotL = max(0, lightNormalProduct);
+				float3 R = reflect(-lightDir, normal);
+				float3 specular = pow(max(0, dot(R, viewDir)), _Glossiness * 100) * _Glossiness * atten * _LightColor0;
+				return max(0, specular);
+			}
+
+			inline half3 ModColor(fixed lightNormalProduct, half4 col, half ambient, fixed atten, half3 _LightColor0)
+			{
+				fixed lanbert = saturate(lightNormalProduct * 0.25 + 0.75); // make labert shadows softer
+				fixed lanbert2 = pow(lightNormalProduct, 0.2); // make the boundary of shadows clearer
+				fixed3 shadowAttenuation = (lanbert + 2 * lanbert2) / 3 * atten * _LightColor0;
+				fixed3 shadow = shadowAttenuation / 2 + 0.5;
+				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
+
+				// 1st pow: high intensity shadow, avoid gray ones
+				//		to make the intensity of colors softer, make the value decrease in it
+				// though this shader avoid to make the charactor agly in dark places,
+				// ambient light makes them saturated white. the last pow() makes an ambient light softer
+				return (pow(col.rgb, 1 / pow(shadow, 1))) * ((2 * shadow + 1 * shadow2) / 3 + pow(ambient, 3)) * col.a;
+			}
+
+			inline half3 Spectroscopy(half3 col,fixed mag, fixed3 viewDir, fixed3 normal, fixed3 pos)
+			{
+				fixed theta = dot(normal, viewDir) * (pos.x + pos.y + pos.z) / 30 + (normal.x + normal.y + normal.z);
+
+				fixed s = sin(theta*1.41421356);
+				fixed c = cos(theta*0.6);
+				return half3(c, s, 1 - c - s) * mag;
 			}
         ENDCG
 
@@ -101,18 +147,6 @@ Shader "iYiShader/iYiShader"
 				UnityGIInput GIData;
 			};
 
-			sampler2D _MainTex;
-			half4 _MainTex_ST;
-			half _Glossiness;
-			half _Metallic;
-			fixed4 _Color;
-			sampler2D _Normal;
-			half4 _Normal_ST;
-			sampler2D _MainTex2;
-			half4 _MainTex2_ST;
-			half _SecondaryMapStrength;
-			sampler2D _Normal2;
-			half4 _Normal2_ST;
 			fixed4  _FresnelColor;
 			half _FresnelRimCoefficient;
 			half _FresnelBaseCoefficient;
@@ -131,14 +165,13 @@ Shader "iYiShader/iYiShader"
 			{
 				UNITY_POSITION(pos);
 				float2 uv : TEXCOORD0; // _MainTex
-				float3 worldNormal : TEXCOORD1;
-				float3 worldPos : TEXCOORD8;
-				float3 worldLightDir : TEXCOORD2;
-				float3 ambient: TEXCOORD3;
-				float3 lightDir : TEXCOORD4;
-				UNITY_SHADOW_COORDS(5)
-				float3 viewDir : TEXCOORD6;
-				float3 worldViewDir : TEXCOORD7;
+				float3 worldPos : TEXCOORD1;
+				float3 ambient: TEXCOORD2;
+				float3 lightDir : TEXCOORD3;
+				UNITY_SHADOW_COORDS(4)
+				float3 viewDir : TEXCOORD5;
+				float3 worldViewDir : TEXCOORD6;
+				float3 n: TEXCOORD7;
 			};
 			v2f vert(appdata_full v) {
 				v2f o;
@@ -146,7 +179,6 @@ Shader "iYiShader/iYiShader"
 				o.pos = UnityObjectToClipPos(v.vertex);
 				o.uv.xy = TRANSFORM_TEX(v.texcoord, _MainTex);
 				o.worldPos.xyz = mul(unity_ObjectToWorld, v.vertex).xyz;
-				o.worldNormal = UnityObjectToWorldNormal(v.normal);
 				UNITY_TRANSFER_LIGHTING(o, v.texcoord1.xy); // pass shadow and, possibly, light cookie coordinates to pixel shader
 
 				// ambient light
@@ -159,17 +191,9 @@ Shader "iYiShader/iYiShader"
 						unity_4LightAtten0, o.worldPos, o.worldNormal
 					);
 				#endif
-					o.ambient += max(0, ShadeSH9(float4(o.worldNormal, 1)));
+					o.ambient += max(0, ShadeSH9(float4(UnityObjectToWorldNormal(v.normal), 1)));
 				#else
 					o.ambient = 0;
-				#endif
-
-
-				o.worldViewDir = normalize(UnityWorldSpaceViewDir(o.worldPos));
-				#ifndef USING_DIRECTIONAL_LIGHT
-					o.worldLightDir = normalize(UnityWorldSpaceLightDir(o.worldPos));
-				#else
-					o.worldLightDir = _WorldSpaceLightPos0.xyz;
 				#endif
 
 				// for bamp map
@@ -177,6 +201,7 @@ Shader "iYiShader/iYiShader"
 				o.lightDir = normalize(mul(rotation, ObjSpaceLightDir(v.vertex)));
 				o.viewDir = normalize(mul(rotation, ObjSpaceViewDir(v.vertex)));
 
+				o.n = UnityObjectToWorldNormal(v.normal);
 				return o;
 			}
 
@@ -188,39 +213,20 @@ Shader "iYiShader/iYiShader"
 
 				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
 
-
-
 				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
 				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
 
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed lanbert = saturate(lightProduct *0.25 + 0.75); // make labert shadows softer
-				fixed lanbert2 = pow(lightProduct, 0.2); // make the boundary of shadows clearer
-				fixed3 shadowAttenuation = ( lanbert +2 * lanbert2) / 3 * atten * _LightColor0;
-				fixed3 shadow = shadowAttenuation / 2 + 0.5;
-				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
-				
-				// 1st pow: high intensity shadow, avoid gray ones
-				//		to make the intensity of colors softer, make the value decrease in it
-				// though this shader avoid to make the charactor agly in dark places,
-				// ambient light makes them saturated white. the last pow() makes an ambient light softer
 				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
-				col.rgb = (pow(col, 1 / pow(shadow, 1))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3)) * col.a;
 
-
-				half NdotL = max(0, lightProduct);
-				float3 R = reflect(-IN.lightDir, normal);
-				float3 specular = pow(max(0, dot(R, IN.viewDir)), _Glossiness * 100)*_Glossiness * atten * _LightColor0;
-				col.rgb += max(0, specular);
+				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
+				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
 
 				#ifdef USE_SPECTROSCOPY
-					fixed mag = length(col.rgb) * 0.05;
-					col.rgb *= 1 - mag / 2;
-					fixed theta = 30 * dot(normal, IN.viewDir) * atan(IN.pos.x / 50 + IN.pos.y / 50 + IN.pos.z / 50) + IN.worldNormal.x;
-					col.r += cos(theta) * mag;
-					col.g += sin(theta) * mag;
-					col.b += (1 - cos(theta) - sin(theta)) * mag;
+				fixed mag = length(col.rgb) * 0.05;
+				col.rgb *= 1 - mag / 2;
+				col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
 				#endif
 				
 				return col;
@@ -257,23 +263,9 @@ Shader "iYiShader/iYiShader"
 				half3 worldNormal: TEXCOORD1;
 				half3 ambient: TEXCOORD2;
 				half3 worldPos: TEXCOORD3;
-				float3 lightDir : TEXCOORD4;
-				float3 worldLightDir : TEXCOORD5;
-				float3 viewDir : TEXCOORD6;
+				half3 lightDir : TEXCOORD4;
+				half3 viewDir : TEXCOORD6;
 			};
-
-			sampler2D _MainTex;
-			half4 _MainTex_ST;
-			half _Glossiness;
-			half _Metallic;
-			fixed4 _Color;
-			uniform sampler2D _Normal;
-			uniform float4 _Normal_ST;
-			uniform float _NormalScale;
-			sampler2D _Normal2;
-			half4 _Normal2_ST;
-			sampler2D _MainTex2;
-			half4 _MainTex2_ST;
 
 			v2f vert(appdata_full v)
 			{
@@ -284,14 +276,6 @@ Shader "iYiShader/iYiShader"
 				o.worldNormal = UnityObjectToWorldNormal(v.normal);
 				o.worldPos = mul(unity_ObjectToWorld, v.vertex);
 
-				// for bamp map
-				float3 n = normalize(v.normal);
-				if (_WorldSpaceLightPos0.w > 0) {
-					o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz - o.worldPos.xyz);
-				}
-				else {
-					o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz);
-				}
 				TANGENT_SPACE_ROTATION;
 				o.lightDir = normalize(mul(rotation, ObjSpaceLightDir(v.vertex)));
 				o.viewDir = normalize(mul(rotation, ObjSpaceViewDir(v.vertex)));
@@ -301,39 +285,25 @@ Shader "iYiShader/iYiShader"
 
 			half4 frag(v2f IN) : COLOR
 			{
+
 				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
-				col.rgb = clamp(col.rgb * tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * 2, 0.01, 0.99);
+				half3 second = (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength) / 2) * 2;
+				col.rgb = clamp(col.rgb * second, 0.01, 0.99);
+
 
 				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
 				
+
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 
-				float3 worldPos = IN.worldPos;
-				float3 worldViewDir = normalize(UnityWorldSpaceViewDir(worldPos));
-				half NdotL = max(0, dot(IN.worldNormal, IN.worldLightDir));
-				if (NdotL <= 0) {
-					atten = 0;
-				}
-
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
-				fixed lanbert = saturate(lightProduct *0.25 + 0.75);
-				fixed lanbert2 = pow(lightProduct, 0.2);
-				fixed3 shadowAttenuation = (lanbert + 2 * lanbert2) / 3 * atten * _LightColor0;
-				fixed3 shadow1 = shadowAttenuation / 2 + 0.5;
-				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
-				col.rgb = (pow(col, 1 / pow(shadow1, 1))) * ((2 * shadow1 + 1 * shadow2) / 3 + pow(IN.ambient, 3)) * atten * _LightColor0 * col.a;
-				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
-				float3 spec = pow(max(0, dot(R, worldViewDir)), _Glossiness * 1000)*_LightColor0 *_Glossiness * atten;
-				col.rgb += max(0, spec);
+				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
+				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
 
 				#ifdef USE_SPECTROSCOPY
-					fixed mag = length(col.rgb) * 0.05;
-					col.rgb *= 1 - mag / 2;
-					fixed theta = 30 * dot(normal, IN.viewDir) * atan(IN.pos.x / 50 + IN.pos.y / 50 + IN.pos.z / 50) + IN.worldNormal.x;
-					col.r += cos(theta) * mag;
-					col.g += sin(theta) * mag;
-					col.b += (1 - cos(theta) - sin(theta)) * mag;
+					col.rgb += Spectroscopy(col.rgb, IN.viewDir, normal, IN.pos, IN.worldNormal);
 				#endif
+
 				return col;
 			}
 			ENDCG
