@@ -3,7 +3,7 @@
 Shader "iYiShader/iYiShader"
 {
     Properties
-    {
+	{
 		[HideInInspector] _RenderingMode("Rendering Mode", Int) = 0
 		[HideInInspector] _BlendA("Blend Source", Int) = 1.0
 		[HideInInspector] _BlendB("Blend Distination", Int) = 0.0
@@ -11,12 +11,24 @@ Shader "iYiShader/iYiShader"
 		[Header(Rendering)]
 		[Enum(UnityEngine.Rendering.CullMode)]_CullMode("Cull Mode", Int) = 0
 
-        _Color ("Color", Color) = (1,1,1,1)
-        _MainTex ("Albedo (RGB)", 2D) = "white" {}
+		[Header(Texture)]
+		[MainColor]_Color("Color", Color) = (1, 1, 1, 1)
+		[Normal]_Normal("Normal", 2D) = "bump" {}
+        [MainTexture]_MainTex ("Albedo (RGB)", 2D) = "white" {}
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
-		[Normal][Header(Normal Map)]_Normal("Normal", 2D) = "bump" {}
-		[Ambient Occlusion][Header(Normal Map)]_AmbientOcclusion("Ambient Occlusion", 2D) = "bump" {}
+
+
+		[Header(Secondary Map)]
+		_MainTex2("Albedo (RGB)", 2D) = "gray" {}
+		_SecondaryMapStrength("Smoothness", Range(0,4)) = 2
+		[Normal]_Normal2("Normal2", 2D) = "bump" {}
+
+
+		[Header(Additional settings)]
+		[Ambient Occlusion]_AmbientOcclusion("Ambient Occlusion", 2D) = "bump" {}
+		[Toggle(USE_SPECTROSCOPY)]_Spectroscopy("Spectroscopy", Float) = 0
+
 		[Header(Fresnel Schlick approximation )]
 		_FresnelColor("Fresnel Color", Color) = (1,1,1,0)
 		[PowerSlider(2)] _FresnelRimCoefficient("Rim Coefficient", Range(0.0, 1.0)) = 1
@@ -32,6 +44,7 @@ Shader "iYiShader/iYiShader"
         CGINCLUDE
 			#include "UnityPBSLighting.cginc"
 			#include "AutoLight.cginc"
+			#pragma shader_feature USE_SPECTROSCOPY
 			inline float4x4 InvTangentMatrix(float3 tan, float3 bin, float3 nor)
 			{
 				return transpose(float4x4(
@@ -95,9 +108,17 @@ Shader "iYiShader/iYiShader"
 			fixed4 _Color;
 			sampler2D _Normal;
 			half4 _Normal_ST;
+			sampler2D _MainTex2;
+			half4 _MainTex2_ST;
+			half _SecondaryMapStrength;
+			sampler2D _Normal2;
+			half4 _Normal2_ST;
 			fixed4  _FresnelColor;
 			half _FresnelRimCoefficient;
 			half _FresnelBaseCoefficient;
+			sampler2D _AmbientOcclusion;
+			half4 _AmbientOcclusion_ST;
+			
 			
 			// Add instancing support for this shader. You need to check 'Enable Instancing' on materials that use the shader.
 			// See https://docs.unity3d.com/Manual/GPUInstancing.html for more information about instancing.
@@ -161,10 +182,11 @@ Shader "iYiShader/iYiShader"
 
 			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
 				// Albedo comes from a texture tinted by color
-				fixed4 col = clamp(tex2D(_MainTex, IN.uv) * _Color, 0.01,0.99);
+				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
+				half3 second = (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength)/2) * 2;
+				col.rgb = clamp(col.rgb * second, 0.01, 0.99);
 
-				float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
-				half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), 1);
+				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
 
 
 
@@ -175,14 +197,15 @@ Shader "iYiShader/iYiShader"
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
 				fixed lanbert = saturate(lightProduct *0.25 + 0.75); // make labert shadows softer
 				fixed lanbert2 = pow(lightProduct, 0.2); // make the boundary of shadows clearer
-				fixed3 shadowAttenuation = (2*lanbert + lanbert2) / 3 * atten * _LightColor0;
+				fixed3 shadowAttenuation = ( lanbert +2 * lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
-
+				
 				// 1st pow: high intensity shadow, avoid gray ones
 				//		to make the intensity of colors softer, make the value decrease in it
 				// though this shader avoid to make the charactor agly in dark places,
 				// ambient light makes them saturated white. the last pow() makes an ambient light softer
+				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
 				col.rgb = (pow(col, 1 / pow(shadow, 1))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3)) * col.a;
 
 
@@ -191,7 +214,14 @@ Shader "iYiShader/iYiShader"
 				float3 specular = pow(max(0, dot(R, IN.worldViewDir)), _Glossiness * 100)*_Glossiness * atten * _LightColor0;
 				col.rgb += max(0, specular);
 
-
+				#ifdef USE_SPECTROSCOPY
+					fixed mag = length(col.rgb) * 0.05;
+					col.rgb *= 1 - mag / 2;
+					fixed theta = 30 * dot(normal, IN.viewDir) * atan(IN.pos.x / 50 + IN.pos.y / 50 + IN.pos.z / 50) + IN.worldNormal.x;
+					col.r += cos(theta) * mag;
+					col.g += sin(theta) * mag;
+					col.b += (1 - cos(theta) - sin(theta)) * mag;
+				#endif
 				
 				return col;
 			}
@@ -229,6 +259,7 @@ Shader "iYiShader/iYiShader"
 				half3 worldPos: TEXCOORD3;
 				float3 lightDir : TEXCOORD4;
 				float3 worldLightDir : TEXCOORD5;
+				float3 viewDir : TEXCOORD6;
 			};
 
 			sampler2D _MainTex;
@@ -239,6 +270,10 @@ Shader "iYiShader/iYiShader"
 			uniform sampler2D _Normal;
 			uniform float4 _Normal_ST;
 			uniform float _NormalScale;
+			sampler2D _Normal2;
+			half4 _Normal2_ST;
+			sampler2D _MainTex2;
+			half4 _MainTex2_ST;
 
 			v2f vert(appdata_full v)
 			{
@@ -257,18 +292,20 @@ Shader "iYiShader/iYiShader"
 				else {
 					o.worldLightDir = normalize(_WorldSpaceLightPos0.xyz);
 				}
-				o.lightDir = normalize(mul(mul(unity_WorldToObject, o.worldLightDir), InvTangentMatrix(v.tangent, cross(n, v.tangent), n)));
+				TANGENT_SPACE_ROTATION;
+				o.lightDir = normalize(mul(rotation, ObjSpaceLightDir(v.vertex)));
+				o.viewDir = normalize(mul(rotation, ObjSpaceViewDir(v.vertex)));
 
 				return o;
 			}
 
 			half4 frag(v2f IN) : COLOR
 			{
-				fixed4 col = clamp(tex2D(_MainTex, IN.uv) * _Color, 0.01,0.99);
-				float2 uv_Normal = IN.uv * _Normal_ST.xy + _Normal_ST.zw;
-				half3 normal = UnpackScaleNormal(tex2D(_Normal, uv_Normal), 1);
+				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
+				col.rgb = clamp(col.rgb * tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * 2, 0.01, 0.99);
 
-
+				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
+				
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 
 				float3 worldPos = IN.worldPos;
@@ -278,22 +315,25 @@ Shader "iYiShader/iYiShader"
 					atten = 0;
 				}
 
-			
-				//half3 diff = max(0, dot(normal, IN.lightDir)) * _LightColor0 * atten*2;
-				//col.rgb *= pow(diff, 1); // make the light soft
-
-
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
 				fixed lanbert = saturate(lightProduct *0.25 + 0.75);
 				fixed lanbert2 = pow(lightProduct, 0.2);
-				fixed3 shadowAttenuation = (2 * lanbert + lanbert2) / 3 * atten;
+				fixed3 shadowAttenuation = (lanbert + 2 * lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow1 = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
 				col.rgb = (pow(col, 1 / pow(shadow1, 1))) * ((2 * shadow1 + 1 * shadow2) / 3 + pow(IN.ambient, 3)) * atten * _LightColor0 * col.a;
-				//col.rgb *= atten * _LightColor0;
 				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
 				float3 spec = pow(max(0, dot(R, worldViewDir)), _Glossiness * 1000)*_LightColor0 *_Glossiness * atten;
 				col.rgb += max(0, spec);
+
+				#ifdef USE_SPECTROSCOPY
+					fixed mag = length(col.rgb) * 0.05;
+					col.rgb *= 1 - mag / 2;
+					fixed theta = 30 * dot(normal, IN.viewDir) * atan(IN.pos.x / 50 + IN.pos.y / 50 + IN.pos.z / 50) + IN.worldNormal.x;
+					col.r += cos(theta) * mag;
+					col.g += sin(theta) * mag;
+					col.b += (1 - cos(theta) - sin(theta)) * mag;
+				#endif
 				return col;
 			}
 			ENDCG
