@@ -209,9 +209,9 @@ Shader "iYiShader/iYiShader"
 				col.rgb = (pow(col, 1 / pow(shadow, 1))) * ((2*shadow + 1*shadow2)/3 + pow(IN.ambient, 3)) * col.a;
 
 
-				half NdotL = max(0, dot(IN.worldNormal, lightProduct));
-				float3 R = normalize(-IN.worldLightDir + 2.0 * IN.worldNormal * NdotL);
-				float3 specular = pow(max(0, dot(R, IN.worldViewDir)), _Glossiness * 100)*_Glossiness * atten * _LightColor0;
+				half NdotL = max(0, lightProduct);
+				float3 R = reflect(-IN.lightDir, normal);
+				float3 specular = pow(max(0, dot(R, IN.viewDir)), _Glossiness * 100)*_Glossiness * atten * _LightColor0;
 				col.rgb += max(0, specular);
 
 				#ifdef USE_SPECTROSCOPY
