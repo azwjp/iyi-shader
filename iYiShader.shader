@@ -18,8 +18,9 @@
 
 
 		[Header(Secondary Map)]
+		[Toggle(USE_SECONDARYMAP)]_UseSecondaryMap("Use secondary map", Float) = 0
 		_MainTex2("Albedo (RGB)", 2D) = "gray" {}
-		_SecondaryMapStrength("Smoothness", Range(0,4)) = 2
+		_SecondaryMapStrength("Smoothness", Range(0,2)) = 1
 		[Normal]_Normal2("Normal2", 2D) = "bump" {}
 
 
@@ -43,19 +44,23 @@
 			#include "UnityPBSLighting.cginc"
 			#include "AutoLight.cginc"
 			#pragma shader_feature USE_SPECTROSCOPY
+			#pragma shader_feature USE_SECONDARYMAP
 
 			fixed4 _Color;
-		sampler2D _MainTex;
-		half4 _MainTex_ST;
-		sampler2D _Normal;
-		half4 _Normal_ST;
-		half _Glossiness;
-		half _Metallic;
-		sampler2D _MainTex2;
-		half4 _MainTex2_ST;
-		half _SecondaryMapStrength;
-		sampler2D _Normal2;
-		half4 _Normal2_ST;
+			sampler2D _MainTex;
+			half4 _MainTex_ST;
+			sampler2D _Normal;
+			half4 _Normal_ST;
+			half _Glossiness;
+			half _Metallic;
+			sampler2D _MainTex2;
+			half4 _MainTex2_ST;
+			half _SecondaryMapStrength;
+			sampler2D _Normal2;
+			half4 _Normal2_ST;
+			fixed4  _FresnelColor;
+			half _FresnelRimCoefficient;
+			half _FresnelBaseCoefficient;
 
 			inline float4x4 InvTangentMatrix(float3 tan, float3 bin, float3 nor)
 			{
@@ -93,7 +98,7 @@
 				//		to make the intensity of colors softer, make the value decrease in it
 				// though this shader avoid to make the charactor agly in dark places,
 				// ambient light makes them saturated white. the last pow() makes an ambient light softer
-				return (pow(col.rgb, 1 / pow(shadow, 1))) * ((2 * shadow + 1 * shadow2) / 3 + pow(ambient, 3)) * col.a;
+				return (pow(col.rgb, 1 / pow(shadow, 0.5))) * ((2 * shadow + 1 * shadow2) / 3 + pow(ambient, 3)) * col.a;
 			}
 
 			inline half3 Spectroscopy(half3 col,fixed mag, fixed3 viewDir, fixed3 normal, fixed3 pos)
@@ -145,9 +150,6 @@
 				UnityGIInput GIData;
 			};
 
-			fixed4  _FresnelColor;
-			half _FresnelRimCoefficient;
-			half _FresnelBaseCoefficient;
 			sampler2D _AmbientOcclusion;
 			half4 _AmbientOcclusion_ST;
 			
@@ -169,8 +171,8 @@
 				UNITY_SHADOW_COORDS(4)
 				float3 viewDir : TEXCOORD5;
 				float3 worldViewDir : TEXCOORD6;
-				float3 n: TEXCOORD7;
 			};
+
 			v2f vert(appdata_full v) {
 				v2f o;
 				UNITY_INITIALIZE_OUTPUT(v2f, o);
@@ -199,32 +201,41 @@
 				o.lightDir = normalize(mul(rotation, ObjSpaceLightDir(v.vertex)));
 				o.viewDir = normalize(mul(rotation, ObjSpaceViewDir(v.vertex)));
 
-				o.n = UnityObjectToWorldNormal(v.normal);
 				return o;
 			}
 
 			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
 				// Albedo comes from a texture tinted by color
 				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
-				half3 second = (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength)/2) * 2;
-				col.rgb = clamp(col.rgb * second, 0.01, 0.99);
+				
+				col.rgb = clamp(col.rgb
+					#ifdef USE_SECONDARYMAP
+						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength) / 2) * 2
+					#endif
+				, 0.01, 0.99);
 
-				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
+				half3 normal = normalize(pow(UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1)
+					#ifdef USE_SECONDARYMAP
+						+ UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)
+					#endif
+				, 1));
 
-				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
-				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
 
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
 				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
 
 				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
-				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
 
+				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
+				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
+
+				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
+				
 				#ifdef USE_SPECTROSCOPY
-				fixed mag = length(col.rgb) * 0.05;
-				col.rgb *= 1 - mag / 2;
-				col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
+					fixed mag = length(col.rgb) * 0.1;
+					col.rgb *= 1 - mag / 2;
+					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
 				#endif
 				
 				return col;
@@ -285,8 +296,13 @@
 			{
 
 				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
-				half3 second = (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength) / 2) * 2;
-				col.rgb = clamp(col.rgb * second, 0.01, 0.99);
+
+				#ifdef USE_SECONDARYMAP
+					half3 second = (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength) / 2) * 2;
+					col.rgb = clamp(col.rgb * second, 0.01, 0.99);
+				#else
+					col.rgb = clamp(col.rgb, 0.01, 0.99);
+				#endif
 
 
 				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
@@ -296,10 +312,16 @@
 
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
 				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
+
+				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
+				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
+
 				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
 
 				#ifdef USE_SPECTROSCOPY
-					col.rgb += Spectroscopy(col.rgb, IN.viewDir, normal, IN.pos, IN.worldNormal);
+					fixed mag = length(col.rgb) * 0.1;
+					col.rgb *= 1 - mag / 2;
+					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
 				#endif
 
 				return col;
