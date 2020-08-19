@@ -231,13 +231,14 @@
 				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
 				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
 
-				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
-				
 				#ifdef USE_SPECTROSCOPY
 					fixed mag = length(col.rgb) * 0.1;
 					col.rgb *= 1 - mag / 2;
 					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
 				#endif
+
+				col.rgb = saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0));
+				
 				
 				return col;
 			}
@@ -317,13 +318,14 @@
 				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
 				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
 
-				col.rgb += Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0);
-
 				#ifdef USE_SPECTROSCOPY
 					fixed mag = length(col.rgb) * 0.1;
 					col.rgb *= 1 - mag / 2;
 					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
 				#endif
+
+				col.rgb = saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0));
+
 
 				return col;
 			}
