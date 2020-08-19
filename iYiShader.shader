@@ -43,6 +43,7 @@
         CGINCLUDE
 			#include "UnityPBSLighting.cginc"
 			#include "AutoLight.cginc"
+			#include "UnityCG.cginc"
 			#pragma shader_feature USE_SPECTROSCOPY
 			#pragma shader_feature USE_SECONDARYMAP
 
