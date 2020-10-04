@@ -11,8 +11,8 @@
 
 		[Header(Texture)]
 		[MainColor]_Color("Color", Color) = (1, 1, 1, 1)
+		[MainTexture]_MainTex("Albedo (RGB)", 2D) = "white" {}
 		[Normal]_Normal("Normal", 2D) = "bump" {}
-        [MainTexture]_MainTex ("Albedo (RGB)", 2D) = "white" {}
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
 
@@ -20,7 +20,7 @@
 		[Header(Secondary Map)]
 		[Toggle(USE_SECONDARYMAP)]_UseSecondaryMap("Use secondary map", Float) = 0
 		_MainTex2("Albedo (RGB)", 2D) = "gray" {}
-		_SecondaryMapStrength("Smoothness", Range(0,2)) = 1
+		_SecondaryMapStrength("Secondary Map Strength", Range(0,2)) = 1
 		[Normal]_Normal2("Normal2", 2D) = "bump" {}
 
 
