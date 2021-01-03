@@ -16,11 +16,11 @@
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
 
-
 		[Header(Secondary Map)]
 		[Toggle(USE_SECONDARYMAP)]_UseSecondaryMap("Use secondary map", Float) = 0
 		_MainTex2("Albedo (RGB)", 2D) = "gray" {}
 		_SecondaryMapStrength("Secondary Map Strength", Range(0,2)) = 1
+		_SecondaryMapMask("Secondary Map Mask", 2D) = "white" {}
 		[Normal]_Normal2("Normal2", 2D) = "bump" {}
 
 
@@ -57,11 +57,27 @@
 			sampler2D _MainTex2;
 			half4 _MainTex2_ST;
 			half _SecondaryMapStrength;
+			sampler2D _SecondaryMapMask;
+			half4 _SecondaryMapMask_ST;
 			sampler2D _Normal2;
 			half4 _Normal2_ST;
+			sampler2D _AmbientOcclusion;
+			half4 _AmbientOcclusion_ST;
 			fixed4  _FresnelColor;
 			half _FresnelRimCoefficient;
 			half _FresnelBaseCoefficient;
+
+			struct v2f
+			{
+				UNITY_POSITION(pos);
+				float2 uv : TEXCOORD0; // _MainTex
+				float3 worldPos : TEXCOORD1;
+				float3 ambient: TEXCOORD2;
+				float3 lightDir : TEXCOORD3;
+				UNITY_SHADOW_COORDS(4)
+				float3 viewDir : TEXCOORD5;
+				float3 worldViewDir : TEXCOORD6;
+			};
 
 			inline float4x4 InvTangentMatrix(float3 tan, float3 bin, float3 nor)
 			{
@@ -110,6 +126,45 @@
 				fixed c = cos(theta*0.6);
 				return half3(c, s, 1 - c - s) * mag;
 			}
+			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
+				// Albedo comes from a texture tinted by color
+				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
+				#ifdef USE_SECONDARYMAP
+					fixed mask = _SecondaryMapStrength * (tex2D(_SecondaryMapMask, IN.uv * _SecondaryMapMask_ST.xy + _SecondaryMapMask_ST.zw) * _Color).r;
+				#endif
+				
+				col.rgb = clamp(col.rgb
+					#ifdef USE_SECONDARYMAP
+						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * mask + (1 - mask) / 2) * 2
+					#endif
+				, 0.01, 0.99);
+
+				half3 normal = normalize(pow(UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1)
+					#ifdef USE_SECONDARYMAP
+						+ UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)
+					#endif
+				, 1));
+
+				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
+				fixed lightProduct = max(0, dot(normal, IN.lightDir));
+				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
+
+				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
+
+				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
+				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
+
+				#ifdef USE_SPECTROSCOPY
+					fixed mag = length(col.rgb) * 0.1;
+					col.rgb *= 1 - mag / 2;
+					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
+				#endif
+
+				col.rgb = saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0));
+				
+				
+				return col;
+			}
         ENDCG
 
 		Pass{
@@ -150,9 +205,6 @@
 				Input SurfInput;
 				UnityGIInput GIData;
 			};
-
-			sampler2D _AmbientOcclusion;
-			half4 _AmbientOcclusion_ST;
 			
 			
 			// Add instancing support for this shader. You need to check 'Enable Instancing' on materials that use the shader.
@@ -162,18 +214,6 @@
 				// put more per-instance properties here
 			UNITY_INSTANCING_BUFFER_END(Props)
 
-			struct v2f
-			{
-				UNITY_POSITION(pos);
-				float2 uv : TEXCOORD0; // _MainTex
-				float3 worldPos : TEXCOORD1;
-				float3 ambient: TEXCOORD2;
-				float3 lightDir : TEXCOORD3;
-				UNITY_SHADOW_COORDS(4)
-				float3 viewDir : TEXCOORD5;
-				float3 worldViewDir : TEXCOORD6;
-			};
-
 			v2f vert(appdata_full v) {
 				v2f o;
 				UNITY_INITIALIZE_OUTPUT(v2f, o);
@@ -181,6 +221,7 @@
 				o.uv.xy = TRANSFORM_TEX(v.texcoord, _MainTex);
 				o.worldPos.xyz = mul(unity_ObjectToWorld, v.vertex).xyz;
 				UNITY_TRANSFER_LIGHTING(o, v.texcoord1.xy); // pass shadow and, possibly, light cookie coordinates to pixel shader
+				float3 worldNormal = UnityObjectToWorldNormal(v.normal);
 
 				// ambient light
 				#if UNITY_SHOULD_SAMPLE_SH
@@ -189,10 +230,10 @@
 						unity_4LightPosX0, unity_4LightPosY0, unity_4LightPosZ0,
 						unity_LightColor[0].rgb, unity_LightColor[1].rgb,
 						unity_LightColor[2].rgb, unity_LightColor[3].rgb,
-						unity_4LightAtten0, o.worldPos, o.worldNormal
+						unity_4LightAtten0, o.worldPos, worldNormal
 					);
 				#endif
-					o.ambient += max(0, ShadeSH9(float4(UnityObjectToWorldNormal(v.normal), 1)));
+					o.ambient += max(0, ShadeSH9(float4(worldNormal, 1)));
 				#else
 					o.ambient = 0;
 				#endif
@@ -205,43 +246,6 @@
 				return o;
 			}
 
-			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
-				// Albedo comes from a texture tinted by color
-				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
-				
-				col.rgb = clamp(col.rgb
-					#ifdef USE_SECONDARYMAP
-						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength) / 2) * 2
-					#endif
-				, 0.01, 0.99);
-
-				half3 normal = normalize(pow(UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1)
-					#ifdef USE_SECONDARYMAP
-						+ UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)
-					#endif
-				, 1));
-
-
-				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
-				fixed lightProduct = max(0, dot(normal, IN.lightDir));
-				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
-
-				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
-
-				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
-				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
-
-				#ifdef USE_SPECTROSCOPY
-					fixed mag = length(col.rgb) * 0.1;
-					col.rgb *= 1 - mag / 2;
-					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
-				#endif
-
-				col.rgb = saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0));
-				
-				
-				return col;
-			}
 			ENDCG
 		}
 		Pass {
@@ -267,24 +271,12 @@
 				half2 texcoord : TEXCOORD0;
 			};
 
-			struct v2f
-			{
-				UNITY_POSITION(pos);
-				half2 uv : TEXCOORD0;
-				half3 worldNormal: TEXCOORD1;
-				half3 ambient: TEXCOORD2;
-				half3 worldPos: TEXCOORD3;
-				half3 lightDir : TEXCOORD4;
-				half3 viewDir : TEXCOORD6;
-			};
-
 			v2f vert(appdata_full v)
 			{
 				v2f o = (v2f)0;
 
 				o.pos = UnityObjectToClipPos(v.vertex);
 				o.uv = TRANSFORM_TEX(v.texcoord, _MainTex);
-				o.worldNormal = UnityObjectToWorldNormal(v.normal);
 				o.worldPos = mul(unity_ObjectToWorld, v.vertex);
 
 				TANGENT_SPACE_ROTATION;
@@ -292,42 +284,6 @@
 				o.viewDir = normalize(mul(rotation, ObjSpaceViewDir(v.vertex)));
 
 				return o;
-			}
-
-			half4 frag(v2f IN) : COLOR
-			{
-
-				fixed4 col = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
-
-				#ifdef USE_SECONDARYMAP
-					half3 second = (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * _SecondaryMapStrength + (1 - _SecondaryMapStrength) / 2) * 2;
-					col.rgb = clamp(col.rgb * second, 0.01, 0.99);
-				#else
-					col.rgb = clamp(col.rgb, 0.01, 0.99);
-				#endif
-
-
-				half3 normal = normalize(pow((UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1) + UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)) , 1));
-				
-
-				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
-
-				fixed lightProduct = max(0, dot(normal, IN.lightDir));
-				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
-
-				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
-				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
-
-				#ifdef USE_SPECTROSCOPY
-					fixed mag = length(col.rgb) * 0.1;
-					col.rgb *= 1 - mag / 2;
-					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos);
-				#endif
-
-				col.rgb = saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, _Glossiness, atten, _LightColor0));
-
-
-				return col;
 			}
 			ENDCG
 		}
