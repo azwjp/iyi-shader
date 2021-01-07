@@ -21,7 +21,6 @@
 		_Masks("Masks", 2D) = "white" {}
 
 		[Header(Secondary Map)]
-		[Toggle(USE_SECONDARYMAP)]_UseSecondaryMap("Use secondary map", Float) = 0
 		_MainTex2("Albedo (RGB)", 2D) = "gray" {}
 		_SecondaryMapStrength("Secondary Map Strength", Range(0,2)) = 1
 		_SecondaryMapMask("Secondary Map Mask", 2D) = "white" {}
@@ -30,7 +29,6 @@
 
 		[Header(Additional settings)]
 		[Ambient Occlusion]_AmbientOcclusion("Ambient Occlusion", 2D) = "bump" {}
-		[Toggle(USE_SPECTROSCOPY)]_Spectroscopy("Spectroscopy", Float) = 0
 
 		[Header(Fresnel Schlick approximation )]
 		_FresnelColor("Fresnel Color", Color) = (1,1,1,0)
@@ -48,8 +46,6 @@
 			#include "UnityPBSLighting.cginc"
 			#include "AutoLight.cginc"
 			#include "UnityCG.cginc"
-			#pragma shader_feature USE_SPECTROSCOPY
-			#pragma shader_feature USE_SECONDARYMAP
 
 			fixed4 _Color;
 			sampler2D _MainTex;
@@ -141,12 +137,12 @@
 				fixed4 mainTex = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
 				fixed4 col = mainTex;
 				#ifdef USE_SECONDARYMAP
-					fixed smMask = _SecondaryMapStrength * (tex2D(_SecondaryMapMask, IN.uv * _SecondaryMapMask_ST.xy + _SecondaryMapMask_ST.zw) * _Color).r;
+					fixed mask = _SecondaryMapStrength * (tex2D(_SecondaryMapMask, IN.uv * _SecondaryMapMask_ST.xy + _SecondaryMapMask_ST.zw) * _Color).r;
 				#endif
 				
 				col.rgb = clamp(col.rgb
 					#ifdef USE_SECONDARYMAP
-						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * smMask + (1 - smMask) / 2) * 2
+						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * mask + (1 - mask) / 2) * 2
 					#endif
 				, 0.01, 0.99);
 
