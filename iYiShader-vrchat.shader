@@ -1,4 +1,4 @@
-﻿Shader "iYiShader/iYiShader"
+﻿Shader "iYiShader/iYiShader-VRChat"
 {
     Properties
 	{
@@ -13,12 +13,13 @@
 		[MainColor]_Color("Color", Color) = (1, 1, 1, 1)
 		[MainTexture]_MainTex("Albedo (RGB)", 2D) = "white" {}
 		[Normal]_Normal("Normal", 2D) = "bump" {}
+        _NormalStrength ("NormalStrength", Range(0,10)) = 5
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
 
 		_EmissionMagnification("Emission Magnification", Range(0,10)) = 0
 		
-		_Masks("Masks", 2D) = "white" {}
+		_Masks("Masks", 2D) = "black" {}
 
 		[Header(Secondary Map)]
 		_MainTex2("Albedo (RGB)", 2D) = "gray" {}
@@ -52,6 +53,7 @@
 			half4 _MainTex_ST;
 			sampler2D _Normal;
 			half4 _Normal_ST;
+			half _NormalStrength;
 			half _Glossiness;
 			half _Metallic;
 			fixed _EmissionMagnification;
@@ -109,7 +111,7 @@
 			inline half3 ModColor(fixed lightNormalProduct, half4 col, half ambient, fixed atten, half3 _LightColor0)
 			{
 				fixed lanbert = saturate(lightNormalProduct * 0.25 + 0.75); // make labert shadows softer
-				fixed lanbert2 = pow(lightNormalProduct, 0.2); // make the boundary of shadows clearer
+				fixed lanbert2 = pow(lightNormalProduct, 0.3); // make the boundary of shadows clearer
 				fixed3 shadowAttenuation = (lanbert + 2 * lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
@@ -136,36 +138,30 @@
 				// Albedo comes from a texture tinted by color
 				fixed4 mainTex = tex2D(_MainTex, IN.uv * _MainTex_ST.xy + _MainTex_ST.zw) * _Color;
 				fixed4 col = mainTex;
-				#ifdef USE_SECONDARYMAP
-					fixed mask = _SecondaryMapStrength * (tex2D(_SecondaryMapMask, IN.uv * _SecondaryMapMask_ST.xy + _SecondaryMapMask_ST.zw) * _Color).r;
-				#endif
+				fixed smMask = _SecondaryMapStrength * (tex2D(_SecondaryMapMask, IN.uv * _SecondaryMapMask_ST.xy + _SecondaryMapMask_ST.zw) * _Color).r;
 				
 				col.rgb = clamp(col.rgb
-					#ifdef USE_SECONDARYMAP
-						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * mask + (1 - mask) / 2) * 2
-					#endif
+						* (tex2D(_MainTex2, IN.uv * _MainTex2_ST.xy + _MainTex2_ST.zw).rgb * smMask + (1 - smMask) / 2) * 2
 				, 0.01, 0.99);
 
-				half3 normal = normalize(pow(UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1)
-					#ifdef USE_SECONDARYMAP
+				half3 normal = pow(UnpackScaleNormal(tex2D(_Normal, IN.uv * _Normal_ST.xy + _Normal_ST.zw), 1)
 						+ UnpackScaleNormal(tex2D(_Normal2, IN.uv * _Normal2_ST.xy + _Normal2_ST.zw), 1)
-					#endif
-				, 1));
+				, 1);
+				normal.z /= _NormalStrength;
+				normal = normalize(normal);
 
 				UNITY_LIGHT_ATTENUATION(atten, IN, IN.worldPos);
 				fixed lightProduct = max(0, dot(normal, IN.lightDir));
+				fixed lightProductDiff = saturate(lightProduct/dot(fixed3(0,0,1), IN.lightDir));
 				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
 
 				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
-
 				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
 				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
 
-				#ifdef USE_SPECTROSCOPY
-					fixed mag = length(col.rgb) * 0.1;
-					col.rgb *= 1 - mag / 2;
-					col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos) * masks.b;
-				#endif
+				fixed mag = length(col.rgb) * 0.1;
+				col.rgb *= 1 - mag / 2;
+				col.rgb += Spectroscopy(col.rgb, mag, IN.viewDir, normal, IN.pos) * masks.b;
 
 				// if over 1, the pixel emits glossily
 				half glossiness = _Glossiness * masks.a;
@@ -173,6 +169,7 @@
 
 				// emission
 				col.rgb += mainTex * masks.g * _EmissionMagnification;
+				
 				return col;
 			}
         ENDCG
@@ -301,6 +298,7 @@
 		Pass
 		{
 			Tags{ "LightMode" = "ShadowCaster" }
+			ZWrite Off
 
 			CGPROGRAM
 			#pragma vertex vert2
