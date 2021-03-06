@@ -13,9 +13,10 @@
 		[MainColor]_Color("Color", Color) = (1, 1, 1, 1)
 		[MainTexture]_MainTex("Albedo (RGB)", 2D) = "white" {}
 		[Normal]_Normal("Normal", 2D) = "bump" {}
-        _NormalStrength ("NormalStrength", Range(0,10)) = 5
+        _NormalStrength ("NormalStrength", Range(0,100)) = 5
         _Glossiness ("Smoothness", Range(0,1)) = 0.5
         _Metallic ("Metallic", Range(0,1)) = 0.0
+		_Specular ("Specular", Range(0,1)) = 0.0
 
 		_EmissionMagnification("Emission Magnification", Range(0,10)) = 0
 		
@@ -26,6 +27,7 @@
 		_SecondaryMapStrength("Secondary Map Strength", Range(0,2)) = 1
 		_SecondaryMapMask("Secondary Map Mask", 2D) = "white" {}
 		[Normal]_Normal2("Normal2", 2D) = "bump" {}
+		_SecondaryNormalMapStrength("Secondary Normal Map Strength", Range(0,100)) = 1
 
 
 		[Header(Additional settings)]
@@ -56,6 +58,7 @@
 			half _NormalStrength;
 			half _Glossiness;
 			half _Metallic;
+			half _Specular;
 			fixed _EmissionMagnification;
 			sampler2D _Masks;
 			half4 _Masks_ST;
@@ -82,6 +85,7 @@
 				UNITY_SHADOW_COORDS(4)
 				float3 viewDir : TEXCOORD5;
 				float3 worldViewDir : TEXCOORD6;
+				float3 worldNormal : TEXCOORD7;
 			};
 
 			inline float4x4 InvTangentMatrix(float3 tan, float3 bin, float3 nor)
@@ -111,7 +115,7 @@
 			inline half3 ModColor(fixed lightNormalProduct, half4 col, half ambient, fixed atten, half3 _LightColor0)
 			{
 				fixed lanbert = saturate(lightNormalProduct * 0.25 + 0.75); // make labert shadows softer
-				fixed lanbert2 = pow(lightNormalProduct, 0.3); // make the boundary of shadows clearer
+				fixed lanbert2 = pow(lightNormalProduct, 0.5); // make the boundary of shadows clearer
 				fixed3 shadowAttenuation = (lanbert + 2 * lanbert2) / 3 * atten * _LightColor0;
 				fixed3 shadow = shadowAttenuation / 2 + 0.5;
 				fixed3 shadow2 = pow(shadowAttenuation, 0.3);
@@ -132,7 +136,69 @@
 				return half3(c, s, 1 - c - s) * mag;
 			}
 
+            inline float3 boxProjection(float3 normalizedDir, float3 worldPosition, float4 probePosition, float3 boxMin, float3 boxMax)
+            {
+                #if UNITY_SPECCUBE_BOX_PROJECTION
+                    if (probePosition.w > 0) {
+                        float3 magnitudes = ((normalizedDir > 0 ? boxMax : boxMin) - worldPosition) / normalizedDir;
+                        float magnitude = min(min(magnitudes.x, magnitudes.y), magnitudes.z);
+                        normalizedDir = normalizedDir* magnitude + (worldPosition - probePosition);
+                    }
+            	#endif
+
+            	return normalizedDir;
+            }
 			fixed4 frag(v2f IN, half ASEVFace : VFACE) : SV_Target{
+				// GI
+				SurfaceOutputStandard o;
+				UNITY_INITIALIZE_OUTPUT(SurfaceOutputStandard, o);
+				o.Albedo = 0.0;
+				o.Emission = 0.0;
+				o.Alpha = 0.0;
+				o.Occlusion = 1.0;
+				o.Normal = IN.worldNormal;
+
+				UnityGI gi;
+				UNITY_INITIALIZE_OUTPUT(UnityGI, gi);
+				gi.indirect.diffuse = 0;
+				gi.indirect.specular = 0;
+				gi.light.color = 0;
+				gi.light.dir = half3(0, 1, 0);
+				gi.light.ndotl = LambertTerm(o.Normal, gi.light.dir);
+
+				UnityGIInput giInput;
+				UNITY_INITIALIZE_OUTPUT(UnityGIInput, giInput);
+				giInput.light = gi.light;
+				giInput.worldPos = IN.worldPos;
+				giInput.worldViewDir = IN.worldViewDir;
+				giInput.atten = 1;
+
+				#if defined(LIGHTMAP_ON) || defined(DYNAMICLIGHTMAP_ON)
+					giInput.lightmapUV = IN.lmap;
+				#else
+					giInput.lightmapUV = 0.0;
+				#endif
+
+					giInput.ambient = IN.ambient;
+
+					giInput.probeHDR[0] = unity_SpecCube0_HDR;
+					giInput.probeHDR[1] = unity_SpecCube1_HDR;
+
+				#if UNITY_SPECCUBE_BLENDING || UNITY_SPECCUBE_BOX_PROJECTION
+					giInput.boxMin[0] = unity_SpecCube0_BoxMin; // .w holds lerp value for blending
+				#endif
+
+				#if UNITY_SPECCUBE_BOX_PROJECTION
+					giInput.boxMax[0] = unity_SpecCube0_BoxMax;
+					giInput.probePosition[0] = unity_SpecCube0_ProbePosition;
+					giInput.boxMax[1] = unity_SpecCube1_BoxMax;
+					giInput.boxMin[1] = unity_SpecCube1_BoxMin;
+					giInput.probePosition[1] = unity_SpecCube1_ProbePosition;
+				#endif
+
+				LightingStandard_GI(o, giInput, gi);
+
+
 				fixed4 masks = tex2D(_Masks, IN.uv * _Masks_ST.xy + _Masks_ST.zw);
 
 				// Albedo comes from a texture tinted by color
@@ -155,6 +221,11 @@
 				fixed lightProductDiff = saturate(lightProduct/dot(fixed3(0,0,1), IN.lightDir));
 				IN.ambient *= tex2D(_AmbientOcclusion, IN.uv * _AmbientOcclusion_ST.xy + _AmbientOcclusion_ST.zw);
 
+
+				col.rgb *=  (1 + gi.indirect.diffuse);
+				col.rgb = col.rgb +  (col.rgb) * (gi.indirect.specular) * _Specular;
+				col.rgb = saturate(col.rgb);
+
 				col.rgb = ModColor(lightProduct, col, IN.ambient, atten, _LightColor0);
 				half fresnel = _FresnelBaseCoefficient + (1.0 - _FresnelRimCoefficient) * pow(1.0 - max(0, dot(normal, IN.viewDir)), 5);
 				col.rgb = saturate(col.rgb + fresnel * _FresnelColor);
@@ -165,13 +236,32 @@
 
 				// if over 1, the pixel emits glossily
 				half glossiness = _Glossiness * masks.a;
-				col.rgb = saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, glossiness, atten, _LightColor0));
+				col.rgb = pow(saturate(col.rgb + Phong(lightProduct, normal, IN.lightDir, IN.viewDir, glossiness, atten, _LightColor0)), 1);
 
+				// Rreflection
+				half3 worldViewDir = normalize(_WorldSpaceCameraPos - IN.worldPos);
+				half3 reflDir = reflect(-worldViewDir, IN.worldNormal);
+
+				half3 reflDir0 = boxProjection(reflDir, IN.worldPos, unity_SpecCube0_ProbePosition, unity_SpecCube0_BoxMin, unity_SpecCube0_BoxMax);
+				half3 reflDir1 = boxProjection(reflDir, IN.worldPos, unity_SpecCube1_ProbePosition, unity_SpecCube1_BoxMin, unity_SpecCube1_BoxMax);
+
+				half4 refColor0 = UNITY_SAMPLE_TEXCUBE_LOD(unity_SpecCube0, reflDir0, 0);
+				refColor0.rgb = DecodeHDR(refColor0, unity_SpecCube0_HDR);
+
+				// SpecCube1のサンプラはSpecCube0のものを使う
+				half4 refColor1 = UNITY_SAMPLE_TEXCUBE_SAMPLER_LOD(unity_SpecCube1, unity_SpecCube0, reflDir1, 0);
+				refColor1.rgb = DecodeHDR(refColor1, unity_SpecCube1_HDR);
+								
 				// emission
+				half metalic = _Metallic + masks.r;
 				col.rgb += mainTex * masks.g * _EmissionMagnification;
-				
+
+				col.rgb = col.rgb * (1 - metalic + glossiness + refColor0.rgb * _Specular);
+				 //col.rgb = gi.indirect.specular + 0.5;
+
 				return col;
 			}
+
         ENDCG
 
 		Pass{
@@ -228,7 +318,7 @@
 				o.uv.xy = TRANSFORM_TEX(v.texcoord, _MainTex);
 				o.worldPos.xyz = mul(unity_ObjectToWorld, v.vertex).xyz;
 				UNITY_TRANSFER_LIGHTING(o, v.texcoord1.xy); // pass shadow and, possibly, light cookie coordinates to pixel shader
-				float3 worldNormal = UnityObjectToWorldNormal(v.normal);
+				o.worldNormal = UnityObjectToWorldNormal(v.normal);
 
 				// ambient light
 				#if UNITY_SHOULD_SAMPLE_SH
@@ -237,10 +327,10 @@
 						unity_4LightPosX0, unity_4LightPosY0, unity_4LightPosZ0,
 						unity_LightColor[0].rgb, unity_LightColor[1].rgb,
 						unity_LightColor[2].rgb, unity_LightColor[3].rgb,
-						unity_4LightAtten0, o.worldPos, worldNormal
+						unity_4LightAtten0, o.worldPos, o.worldNormal
 					);
 				#endif
-					o.ambient += max(0, ShadeSH9(float4(worldNormal, 1)));
+					o.ambient += max(0, ShadeSH9(float4(o.worldNormal, 1)));
 				#else
 					o.ambient = 0;
 				#endif
@@ -255,8 +345,8 @@
 
 			ENDCG
 		}
-		Pass {
 
+		Pass {
 			Tags{ "LightMode" = "ForwardAdd" }
 
 			Blend One One
@@ -285,6 +375,7 @@
 				o.pos = UnityObjectToClipPos(v.vertex);
 				o.uv = TRANSFORM_TEX(v.texcoord, _MainTex);
 				o.worldPos = mul(unity_ObjectToWorld, v.vertex);
+				o.worldNormal = UnityObjectToWorldNormal(v.normal);
 
 				TANGENT_SPACE_ROTATION;
 				o.lightDir = normalize(mul(rotation, ObjSpaceLightDir(v.vertex)));
